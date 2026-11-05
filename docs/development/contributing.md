@@ -1,0 +1,6 @@
+# Contributing
+
+Contribution process: branches, issues, pull requests, review.
+
+!!! info "To be written"
+    This page is a skeleton. See [Contributing to the documentation](contributing-docs.md) to complete it.
