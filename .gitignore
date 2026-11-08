@@ -1,4 +1,26 @@
+#.gitignore
+
 # Documentation
 site/
 .cache/
 .venv/
+
+# Secret & réglage locaux
+mkosi.key
+mkosi.crt
+mkosi.local.conf
+mkosi.credentials/
+*.gpg
+*.pem
+
+# Artefact de build
+mkosi.output/
+mkosi.cache/
+mkosi.tools/
+mkosi.tools.manifest
+mkosi.version
+logs/
+.mkosi-private/
+
+# Reglages locaux du Justfile
+.env
