@@ -10,3 +10,6 @@ set -eu -o pipefail
 
 finalize-etc
 finalize-tmpfiles-etc
+
+# status.d/image : les paquets de core et ceux de cette image
+finalize-dpkg
