@@ -1,0 +1,63 @@
+#!/bin/bash
+# server - Debian Server Immutable Image
+# Copyright (C) 2026 Alexandre Pujol <alexandre@pujol.io>
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+# Keep the dpkg database on /usr, extensible by system extensions, for the
+# Wazuh package inventory (syscollector reads /var/lib/dpkg/status).
+#
+# /var is not part of the root partition, and a sysext only carries /usr. The
+# first run (core) moves /var/lib/dpkg to /usr/lib/sysimage/dpkg and leaves a
+# relative link, so every image built on core (disk image, extensions)
+# installs into it: their info/<package>.* files are new paths under /usr. The
+# status file is one file, which mkosi drops from an extension (it exists in
+# core): its stanzas go to status.d/, which an extension can add to:
+# - core and the disk image: status.d/image, the whole status;
+# - a sysext: status.d/<name>, the packages status.d/image (core's) lacks.
+# At boot, dpkg-status.service concatenates status.d/* to /var/lib/dpkg/status
+# once the extensions are merged, tmpfiles.d/dpkg.conf links the rest.
+#
+# Run from mkosi.finalize in core and the disk image, and as a post
+# installation script in every extension (extension.conf): only then is core
+# still mounted under it, mkosi unmounts it and drops the paths core has before
+# the finalize scripts. A confext has no /usr, nothing to do.
+
+set -eu -o pipefail
+
+readonly DB="$BUILDROOT/usr/lib/sysimage/dpkg"
+
+# Print the stanzas of the second file whose Package and Architecture are not
+# in the first one, each followed by an empty line.
+new_stanzas() {
+    awk '
+        function key(   i, k) {
+            for (i = 1; i <= NF; i++)
+                if ($i ~ /^(Package|Architecture):/)
+                    k = k $i "\n"
+            return k
+        }
+        BEGIN { RS = ""; FS = "\n" }
+        FILENAME == ARGV[1] { base[key()]; next }
+        !(key() in base) { print $0 "\n" }
+    ' "$@"
+}
+
+main() {
+    case "$(jq -r .Format "$MKOSI_CONFIG")" in
+    confext) ;;
+    sysext)
+        new_stanzas "$DB/status.d/image" "$DB/status" >"$DB/status.d/$(jq -r .Image "$MKOSI_CONFIG")"
+        ;;
+    *)
+        if [[ ! -L "$BUILDROOT/var/lib/dpkg" ]]; then
+            mkdir -p "${DB%/*}"
+            mv "$BUILDROOT/var/lib/dpkg" "$DB"
+            ln --symbolic ../../usr/lib/sysimage/dpkg "$BUILDROOT/var/lib/dpkg"
+        fi
+        mkdir -p "$DB/status.d"
+        new_stanzas /dev/null "$DB/status" >"$DB/status.d/image"
+        ;;
+    esac
+}
+
+main "$@"

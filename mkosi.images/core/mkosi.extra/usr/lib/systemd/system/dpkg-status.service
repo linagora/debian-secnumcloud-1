@@ -1,0 +1,14 @@
+# Copyright (C) 2026 Alexandre Pujol <alexandre@pujol.io>
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+# Reconstruit /var/lib/dpkg/status a partir de /usr/lib/sysimage/dpkg/status.d/
+# (l'image et ses extensions, voir finalize-dpkg).
+
+[Unit]
+Description=Merge the dpkg status of the image and its extensions
+Documentation=man:dpkg-query(1)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=sh -c 'cat /usr/lib/sysimage/dpkg/status.d/* >/var/lib/dpkg/status'
