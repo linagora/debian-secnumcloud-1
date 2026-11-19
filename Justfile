@@ -39,14 +39,17 @@ docker := "docker run --rm --privileged -v \"$PWD\":/work"
 out    := "mkosi.output"
 stamp  := `date +%F_%H-%M-%S`
 
+# Profile mkosi par defaut : une cible (cloudimg | baremetal), plus ",dev" pour le debug
+profile := env("CCBD_PROFILE", "cloudimg")
+
 [private]
 default:
     @just --list
 
 # Build de l'image : where = docker (défaut) ou srv (serveur ccbd a TELECOM)
 [group('build')]
-build where="docker":
-    just build-{{where}}
+build profiles=profile where="docker":
+    just build-{{where}} {{profiles}}
 
 # --- Serveur ---------------------------------------------------------------
 
@@ -57,9 +60,9 @@ sync:
 
 # Build sur le serveur (images précédentes supprimées), log horodaté en local
 [private]
-build-srv: sync
+build-srv profiles: sync
     mkdir -p logs
-    ssh {{remote}} 'cd {{rdir}} && rm -rf {{out}} && mkdir {{out}} && mkosi -B -f build' 2>&1 | tee "logs/{{stamp}}_build-srv.log"
+    ssh {{remote}} 'cd {{rdir}} && rm -rf {{out}} && mkdir {{out}} && mkosi --profile={{profiles}} -B -f build' 2>&1 | tee "logs/{{stamp}}_build-srv.log"
 
 # Télécharge le dernier build serveur (image compressée en zstd pour le transfert)
 [group('build')]
@@ -84,11 +87,11 @@ docker-image:
 
 # Build en local dans Docker (images précédentes supprimées), log horodaté
 [private]
-build-docker: docker-image
+build-docker profiles: docker-image
     mkdir -p logs
     docker run --rm -v "$PWD":/work --entrypoint rm {{image}} -rf {{out}}
     mkdir {{out}}
-    {{docker}} {{image}} -B -f build 2>&1 | tee "logs/{{stamp}}_build-docker.log"
+    {{docker}} {{image}} --profile={{profiles}} -B -f build 2>&1 | tee "logs/{{stamp}}_build-docker.log"
     docker run --rm -v "$PWD":/work --entrypoint chown {{image}} -R "$(id -u):$(id -g)" {{out}} mkosi.version .mkosi-private
 
 # Shell dans le conteneur de build, pour déboguer
@@ -138,6 +141,7 @@ vm-create mode="firstboot":
         --graphics spice \
         --video virtio \
         --channel spicevmc \
+        --channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
         --console pty,target_type=serial \
         --sysinfo "$sysinfo" \
         --noautoconsole
