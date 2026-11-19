@@ -1,0 +1,89 @@
+#!/bin/bash
+# server - Debian Server Immutable Image
+# Copyright (C) 2026 Alexandre Pujol <alexandre@pujol.io>
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+# /etc lives on the dm-verity root, read-only. The entries listed as
+# 'C! /var/etc/<x>' in tmpfiles.d/01-var-etc*.conf stay mutable (a profile
+# adds its own entries, e.g. pi3 01-var-etc-pi3.conf): each is moved
+# to /usr/share/factory/var/etc/<x> and replaced by a symlink
+# /etc/<x> -> /var/etc/<x>. At boot the C! line seeds /var/etc from that
+# factory copy (without an argument, C copies from /usr/share/factory/).
+#
+# The symlinks must be created here, at build time: tmpfiles.d cannot write
+# to /etc on the verity partition. Anything read by a generator (crypttab)
+# is read before /var is mounted and must not rely on this redirect.
+
+set -eu -o pipefail
+
+readonly ETC="$BUILDROOT/etc"
+readonly FACTORY="$BUILDROOT/usr/share/factory"
+readonly ETC_RW=/var/etc
+readonly TMPFILES=("$BUILDROOT"/usr/lib/tmpfiles.d/01-var-etc*.conf)
+
+# Mutable /etc entries: the C! lines of the tmpfiles.d files.
+mapfile -t files < <(sed -n 's|^C!* /var/etc/\([^ ]*\).*|\1|p' "${TMPFILES[@]}")
+
+redirect_mutable_files() {
+    local file src link target rel abs
+
+    mkdir -p "$ETC/sysupdate.d"
+
+    # Image defaults, seeded into /var/etc by their C! lines. systemd-firstboot
+    # would set them from credentials, but systemd 261/262 fails to write these
+    # env files (ENOENT in write_env_file_label()), aborting its whole run:
+    # shipped, it skips them. systemd ships vconsole.conf as a dangling link.
+    rm -f "$ETC/locale.conf" "$ETC/vconsole.conf"
+    printf 'LANG=C.UTF-8\n' >"$ETC/locale.conf"
+    printf 'KEYMAP=fr\n' >"$ETC/vconsole.conf"
+
+    for file in "${files[@]}"; do
+        src="$ETC/$file"
+        if [[ -e "$src" || -L "$src" ]]; then
+            mkdir -p "$(dirname "$FACTORY/var/etc/$file")"
+            cp --archive "$src" "$FACTORY/var/etc/$file"
+            rm -rf "${ETC:?}/$file"
+        fi
+        mkdir -p "$(dirname "$src")"
+        ln --symbolic --force "$ETC_RW/$file" "$src"
+    done
+
+    # Relative symlinks inside the factory copies would resolve against
+    # /var/etc; make them absolute against their original /etc location.
+    while IFS= read -r -d '' link; do
+        target="$(readlink "$link")"
+        if [[ "$target" != /* ]]; then
+            rel="${link#"$FACTORY/var/etc/"}"
+            abs="$(realpath -m "/etc/$rel/../$target")"
+            ln --symbolic --force "$abs" "$link"
+        fi
+    done < <(find "$FACTORY/var/etc" -type l -print0)
+}
+
+fixed_image_configuration() {
+    local file
+
+    # Machine identity and the settings systemd-firstboot configures, in /var
+    # (mounted in the initrd, so these resolve from PID 1's start). repart
+    # creates /var with an "uninitialized" machine ID (40-var.conf): PID 1
+    # generates the ID (DMI UUID on VMs, firmware on the Pi:
+    # systemd.machine_id=firmware) and saves it through the link, a first
+    # boot; systemd-firstboot then writes hostname, timezone and machine tags
+    # from firstboot.* credentials (defaults in /usr/lib/credstore), at the
+    # SYSTEMD_ETC_* paths of system.conf.d/10-firstboot-var.conf. The build
+    # tree's /var/lib/dbus/machine-id is dbus' tmpfiles.d link back to
+    # /etc/machine-id: a loop for kernel-install, and /var is not shipped.
+    rm -f "$ETC/machine-id" "$BUILDROOT/var/lib/dbus/machine-id"
+    ln --symbolic /var/lib/dbus/machine-id "$ETC/machine-id"
+    for file in hostname localtime machine-info; do
+        rm -f "${ETC:?}/$file"
+        ln --symbolic "$ETC_RW/$file" "$ETC/$file"
+    done
+
+    # systemd-resolved stub; a symlink into /run is fine on a read-only /etc.
+    ln --symbolic --force /run/systemd/resolve/stub-resolv.conf "$ETC/resolv.conf"
+}
+
+mkdir -p "$FACTORY/var/etc"
+redirect_mutable_files
+fixed_image_configuration
