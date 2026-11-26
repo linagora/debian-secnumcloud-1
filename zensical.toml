@@ -20,6 +20,7 @@ nav = [
     ] },
     { "Getting started" = [
         "getting-started/index.md",
+        "getting-started/project-structure.md",
         "getting-started/build.md",
         "getting-started/vm.md",
     ] },
