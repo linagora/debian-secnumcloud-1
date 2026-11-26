@@ -51,6 +51,28 @@ default:
 build profiles=profile where="docker":
     just build-{{where}} {{profiles}}
 
+# La clé (mkosi.key/mkosi.crt) est ignorée par git et jamais envoyée par 'sync' : chaque lieu de
+# build garde la sienne. Si une clé (ou un certificat) existe déjà, rien n'est lancé.
+
+# Génère la clé de signature verity, une fois par lieu de build : where = docker (défaut, dépôt local) ou srv
+[group('build')]
+genkey where="docker":
+    just genkey-{{where}}
+
+[private]
+genkey-srv:
+    ssh {{remote}} 'test ! -e {{rdir}}/mkosi.key && test ! -e {{rdir}}/mkosi.crt' \
+        || { echo "Clé déjà présente sur {{remote}}:{{rdir}} (mkosi.key/mkosi.crt) : rien n'est fait" >&2; exit 1; }
+    ssh {{remote}} 'mkdir -p {{rdir}} && cd {{rdir}} && mkosi genkey'
+
+[private]
+genkey-docker:
+    test ! -e mkosi.key && test ! -e mkosi.crt \
+        || { echo "Clé déjà présente (mkosi.key/mkosi.crt) : rien n'est fait" >&2; exit 1; }
+    just docker-image
+    {{docker}} {{image}} genkey
+    docker run --rm -v "$PWD":/work --entrypoint chown {{image}} "$(id -u):$(id -g)" mkosi.key mkosi.crt
+
 # --- Serveur ---------------------------------------------------------------
 
 # Envoie le dossier de travail sur le serveur (sans .git ni fichiers ignorés par git)
@@ -61,6 +83,8 @@ sync:
 # Build sur le serveur (images précédentes supprimées), log horodaté en local
 [private]
 build-srv profiles: sync
+    ssh {{remote}} 'test -f {{rdir}}/mkosi.key && test -f {{rdir}}/mkosi.crt' \
+        || { echo "Clé de signature verity absente sur {{remote}}:{{rdir}} (mkosi.key/mkosi.crt) : lancer 'just genkey srv'" >&2; exit 1; }
     mkdir -p logs
     ssh {{remote}} 'cd {{rdir}} && rm -rf {{out}} && mkdir {{out}} && mkosi --profile={{profiles}} -B -f build' 2>&1 | tee "logs/{{stamp}}_build-srv.log"
 
@@ -88,6 +112,8 @@ docker-image:
 # Build en local dans Docker (images précédentes supprimées), log horodaté
 [private]
 build-docker profiles: docker-image
+    test -f mkosi.key && test -f mkosi.crt \
+        || { echo "Clé de signature verity absente (mkosi.key/mkosi.crt) : lancer 'just genkey'" >&2; exit 1; }
     mkdir -p logs
     docker run --rm -v "$PWD":/work --entrypoint rm {{image}} -rf {{out}}
     mkdir {{out}}
