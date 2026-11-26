@@ -111,9 +111,12 @@ vm-create mode="firstboot":
     [[ "{{mode}}" == firstboot || "{{mode}}" == no-firstboot ]] || { echo "Mode inconnu '{{mode}}' : firstboot ou no-firstboot" >&2; exit 1; }
     img="{{out}}/CCBDos_$(cat mkosi.version 2>/dev/null || true)_x86-64.raw"
     [[ -f "$img" ]] || { echo "Aucune image dans {{out}} : lancer 'just build' ou 'just fetch'" >&2; exit 1; }
-    # TPM2 émulé (swtpm) et firmware UEFI secure boot (ovmf) requis sur l'hôte
-    command -v swtpm_setup &>/dev/null || { echo "swtpm absent : apt install swtpm swtpm-tools" >&2; exit 1; }
-    [[ -f /usr/share/qemu/firmware/50-edk2-x86_64-secure.json ]] || { echo "OVMF secure boot absent : apt install ovmf" >&2; exit 1; }
+    # TPM2 émulé (swtpm) et firmware UEFI secure boot (OVMF) requis : on demande à libvirt ce qu'il
+    # sait faire, indépendamment de la distribution (prérequis : docs/getting-started/vm.md)
+    caps=$(LC_ALL=C virsh {{virsh_c}} domcapabilities --machine q35 --arch x86_64)
+    grep -q "<value>emulator</value>" <<<"$caps" || { echo "TPM émulé indisponible : installer swtpm" >&2; exit 1; }
+    sed -n "/<enum name='secure'>/,/<\/enum>/p" <<<"$caps" | grep -q "<value>yes</value>" \
+        || { echo "Firmware UEFI secure boot indisponible : installer OVMF" >&2; exit 1; }
     echo "Image : $img"
     just vm-destroy
     # Copie de travail dans ~/.vm : l'image de build reste intacte
