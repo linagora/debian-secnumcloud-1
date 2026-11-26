@@ -111,6 +111,12 @@ vm-create mode="firstboot":
     [[ "{{mode}}" == firstboot || "{{mode}}" == no-firstboot ]] || { echo "Mode inconnu '{{mode}}' : firstboot ou no-firstboot" >&2; exit 1; }
     img="{{out}}/CCBDos_$(cat mkosi.version 2>/dev/null || true)_x86-64.raw"
     [[ -f "$img" ]] || { echo "Aucune image dans {{out}} : lancer 'just build' ou 'just fetch'" >&2; exit 1; }
+    # TPM2 émulé (swtpm) et firmware UEFI secure boot (OVMF) requis : on demande à libvirt ce qu'il
+    # sait faire, indépendamment de la distribution (prérequis : docs/getting-started/vm.md)
+    caps=$(LC_ALL=C virsh {{virsh_c}} domcapabilities --machine q35 --arch x86_64)
+    grep -q "<value>emulator</value>" <<<"$caps" || { echo "TPM émulé indisponible : installer swtpm" >&2; exit 1; }
+    sed -n "/<enum name='secure'>/,/<\/enum>/p" <<<"$caps" | grep -q "<value>yes</value>" \
+        || { echo "Firmware UEFI secure boot indisponible : installer OVMF" >&2; exit 1; }
     echo "Image : $img"
     just vm-destroy
     # Copie de travail dans ~/.vm : l'image de build reste intacte
@@ -131,7 +137,8 @@ vm-create mode="firstboot":
         --vcpus {{vm_cpus}} \
         --ram {{vm_ram}} \
         --machine q35 \
-        --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no \
+        --boot uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=yes,firmware.feature1.name=enrolled-keys,firmware.feature1.enabled=no \
+        --tpm backend.type=emulator,backend.version=2.0,model=tpm-crb \
         --disk "path={{vm_dir}}/{{vm_name}}.raw,format=raw,bus=virtio" \
         --os-variant debian13 \
         --network network=default \
@@ -164,7 +171,8 @@ vm-console:
     #!/usr/bin/env bash
     set -euo pipefail
     virsh {{virsh_c}} dominfo {{vm_name}} &>/dev/null || { echo "Pas de VM {{vm_name}} : lancer 'just vm-create'" >&2; exit 1; }
-    [[ $(virsh {{virsh_c}} domstate {{vm_name}}) == running ]] || virsh {{virsh_c}} start {{vm_name}}
+    # LC_ALL=C : sinon domstate est traduit ("en cours d'exécution") et la comparaison échoue
+    [[ $(LC_ALL=C virsh {{virsh_c}} domstate {{vm_name}}) == running ]] || virsh {{virsh_c}} start {{vm_name}}
     exec virsh {{virsh_c}} console {{vm_name}}
 
 # Se connecte en SSH (root) à la VM, via son adresse sur le réseau libvirt "default"
@@ -176,13 +184,15 @@ vm-ssh:
     [[ -n "$ip" ]] || { echo "Pas d'adresse IP pour {{vm_name}} : VM démarrée ? (just vm-create)" >&2; exit 1; }
     exec ssh {{ssh_opt}} root@"$ip"
 
-# Arrête et supprime la VM (définition, variables EFI et disque dans ~/.vm)
+# Arrête et supprime la VM (définition, variables EFI, état du TPM émulé et disque dans ~/.vm)
 [group('vm')]
 vm-destroy:
     #!/usr/bin/env bash
     set -euo pipefail
     if virsh {{virsh_c}} dominfo {{vm_name}} &>/dev/null; then
         virsh {{virsh_c}} destroy {{vm_name}} &>/dev/null || true
-        virsh {{virsh_c}} undefine {{vm_name}} --nvram
+        # --nvram : clés secure boot enrôlées effacées, le firmware repart en mode setup
+        # --tpm   : état swtpm effacé, le TPM repart vierge
+        virsh {{virsh_c}} undefine {{vm_name}} --nvram --tpm
     fi
     rm -f {{vm_dir}}/{{vm_name}}.raw
