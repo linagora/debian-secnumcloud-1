@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Alexandre Pujol <alexandre@pujol.io>
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+set -eu -o pipefail
+
+# La base dpkg passe dans /usr, avant que l'image disque et les extensions
+# ne s'installent par dessus
+finalize-dpkg
