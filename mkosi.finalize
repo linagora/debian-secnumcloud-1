@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Alexandre Pujol <alexandre@pujol.io>
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+# Lancé sur l'arbre final, après la passe systemd-tmpfiles de mkosi : les
+# redirections /etc -> /var/etc doivent être faites ici, sinon cette passe
+# remplace un lien (ex. /etc/ssh) par un vrai dossier.
+
+set -eu -o pipefail
+
+finalize-etc
+finalize-tmpfiles-etc
+
+# status.d/image : les paquets de core et ceux de cette image
+finalize-dpkg
