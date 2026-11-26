@@ -1,9 +1,28 @@
-# Build CCBDos : sur le serveur 'ccbd' de TELECOM, ou en local via Docker.
+# Build CCBDos : en local via Docker (défaut), ou sur le serveur 'ccbd' de TELECOM (srv).
 # 'just' (sans argument) liste les commandes.
 #
-# Reglages propres a chacun : variables d'environnement, ou fichier .env local (ignore par git)
+# Arguments dans cet ordre : <profils> puis <lieu> (docker | srv)
+#   just build                       cloudimg, en local (Docker)
+#   just build cloudimg,dev          cloudimg + profil dev, en local
+#   just build baremetal srv         baremetal, sur le serveur
+#   just fetch                       récupère dans mkosi.output le dernier build du serveur
+#   just clean [srv]                 remise à zéro : sorties, cache et outillage mkosi
+#   just shell [srv]                 shell de débogage (conteneur de build ou serveur)
+#   just vm-create [no-firstboot]    VM depuis le dernier build de mkosi.output
+# !! 'just build srv' = profil 'srv' (inexistant) : toujours donner le profil avant le lieu.
+#
+# Profils mkosi (mkosi.profiles/), séparés par ',' : une cible obligatoire, puis des options
+#   Cibles (une seule) :
+#     cloudimg    VM / cloud : noyau linux-image-cloud-amd64 + qemu-guest-agent (défaut)
+#     baremetal   machine physique : noyau linux-image-amd64 (pilotes matériels complets)
+#   Options :
+#     dev         initrd de débogage : console d'urgence en bash, sans sulogin (jamais en production)
+#   Exemples : cloudimg | cloudimg,dev | baremetal | baremetal,dev
+#
+# Réglages propres à chacun : variables d'environnement, ou fichier .env local (ignoré par git)
+#   CCBD_PROFILE=cloudimg             profils par défaut de 'just build'
 #   CCBD_REMOTE=ccbd                  alias SSH du serveur de build
-#   CCBD_SSH_KEY=~/.ssh/id_ed25519    cle SSH injectee dans la VM (la .pub doit exister)
+#   CCBD_SSH_KEY=~/.ssh/id_ed25519    clé SSH injectée dans la VM (la .pub doit exister)
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set dotenv-load
@@ -39,17 +58,27 @@ docker := "docker run --rm --privileged -v \"$PWD\":/work"
 out    := "mkosi.output"
 stamp  := `date +%F_%H-%M-%S`
 
-# Profile mkosi par defaut : une cible (cloudimg | baremetal), plus ",dev" pour le debug
+# Profils mkosi par défaut (voir l'en-tête) : une cible (cloudimg | baremetal), plus ",dev" pour le débogage
 profile := env("CCBD_PROFILE", "cloudimg")
 
 [private]
 default:
     @just --list
 
-# Build de l'image : where = docker (défaut) ou srv (serveur ccbd a TELECOM)
+# Build de l'image : profiles = cloudimg (défaut) | baremetal [,dev] ; where = docker (défaut) ou srv (serveur ccbd à TELECOM)
 [group('build')]
 build profiles=profile where="docker":
     just build-{{where}} {{profiles}}
+
+# Shell de débogage : where = docker (défaut, conteneur de build) ou srv (dossier de travail du serveur)
+[group('build')]
+shell where="docker":
+    just shell-{{where}}
+
+# Supprime sorties, cache et outillage mkosi : where = docker (défaut, dépôt local) ou srv
+[group('build')]
+clean where="docker":
+    just clean-{{where}}
 
 # --- Serveur ---------------------------------------------------------------
 
@@ -78,6 +107,15 @@ fetch:
     echo "$v" > mkosi.version
     ls -lsh {{out}}/*_${v}_*
 
+[private]
+shell-srv:
+    ssh -t {{remote}} 'cd {{rdir}} && exec bash -l'
+
+# mkosi tourne sans root sur le serveur : c'est mkosi qui supprime ses fichiers (UID secondaires)
+[private]
+clean-srv:
+    ssh {{remote}} 'cd {{rdir}} && mkosi -fff clean && rm -rf {{out}} mkosi.tools.manifest'
+
 # --- Docker ----------------------------------------------------------------
 
 # Image Docker de build (instantané si env/Dockerfile n'a pas changé)
@@ -94,14 +132,13 @@ build-docker profiles: docker-image
     {{docker}} {{image}} --profile={{profiles}} -B -f build 2>&1 | tee "logs/{{stamp}}_build-docker.log"
     docker run --rm -v "$PWD":/work --entrypoint chown {{image}} -R "$(id -u):$(id -g)" {{out}} mkosi.version .mkosi-private
 
-# Shell dans le conteneur de build, pour déboguer
-[group('build')]
-shell: docker-image
+[private]
+shell-docker: docker-image
     {{docker}} -it --entrypoint bash {{image}}
 
-# Supprime sorties, cache et outillage locaux (créés en root par le conteneur)
-[group('build')]
-clean: docker-image
+# Fichiers créés en root par le conteneur : suppression depuis le conteneur
+[private]
+clean-docker: docker-image
     docker run --rm -v "$PWD":/work --entrypoint rm {{image}} -rf {{out}} mkosi.cache mkosi.tools mkosi.tools.manifest .mkosi-private
 
 # --- libvirt ---------------------------------------------------------------
