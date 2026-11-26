@@ -168,7 +168,8 @@ vm-console:
     #!/usr/bin/env bash
     set -euo pipefail
     virsh {{virsh_c}} dominfo {{vm_name}} &>/dev/null || { echo "Pas de VM {{vm_name}} : lancer 'just vm-create'" >&2; exit 1; }
-    [[ $(virsh {{virsh_c}} domstate {{vm_name}}) == running ]] || virsh {{virsh_c}} start {{vm_name}}
+    # LC_ALL=C : sinon domstate est traduit ("en cours d'exécution") et la comparaison échoue
+    [[ $(LC_ALL=C virsh {{virsh_c}} domstate {{vm_name}}) == running ]] || virsh {{virsh_c}} start {{vm_name}}
     exec virsh {{virsh_c}} console {{vm_name}}
 
 # Se connecte en SSH (root) à la VM, via son adresse sur le réseau libvirt "default"
