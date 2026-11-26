@@ -1,0 +1,100 @@
+#!/bin/bash
+# server - Debian Server Immutable Image
+# Copyright (C) 2026 Alexandre Pujol <alexandre@pujol.io>
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+# Validate that all tmpfiles.d rules creating mutable content under /etc/ are
+# covered by a finalize-etc redirect (/etc/X -> /var/etc/X).
+#
+# For each rule that creates a directory, file, or symlink under /etc/:
+#   1. Check if its top-level /etc/ entry is already redirected by finalize-etc
+#      (i.e. /etc/X -> /var/etc/X symlink exists in the image).
+#   2. If redirected: the rule will work through the symlink: OK.
+#   3. If the path already exists as a directory in the image: OK (no-op).
+#   4. Otherwise: raise a build error. The fix is a 'C! /var/etc/<entry>'
+#      line in tmpfiles.d/01-var-etc.conf.
+#
+# This script MUST run after finalize-etc (see the top-level mkosi.finalize).
+
+set -eu -o pipefail
+
+readonly ETC_RO="$BUILDROOT/etc"
+
+# Rule types that create content (directories, files, symlinks).
+# C = copy from factory (no-op if target exists, safe on immutable /etc)
+# z/Z = set permissions only (safe on immutable /etc)
+# We only care about types that CREATE new entries:
+readonly CREATE_TYPES='d|D|f|f\+|f\^|w|w\+|L|L\+|L!'
+
+# Build list of top-level entries already redirected to /var/etc by finalize-etc.
+# These are symlinks in the image pointing to /var/etc/*.
+declare -A redirected
+for entry in "$ETC_RO"/*; do
+    [[ -L "$entry" ]] || continue
+    target="$(readlink "$entry")"
+    if [[ "$target" == /var/etc/* ]]; then
+        name="$(basename "$entry")"
+        redirected["$name"]=1
+    fi
+done
+
+echo "tmpfiles-etc: redirected top-level entries: ${!redirected[*]}"
+
+# The effective configuration (overrides and masking applied), each file
+# introduced by a "# <root>/<path>" header.
+confname=""
+while IFS= read -r line; do
+    if [[ "$line" == "# $BUILDROOT/"* ]]; then
+        confname="${line##*/}"
+        continue
+    fi
+
+    # Skip systemd's etc.conf: /etc symlinks (os-release, mtab...) that exist
+    # in the image anyway
+    [[ "$confname" == "etc.conf" ]] && continue
+
+    # Skip comments and empty lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// /}" ]] && continue
+
+    # Extract the rule type and path.
+    # tmpfiles format: TYPE PATH [MODE] [USER] [GROUP] [AGE] [ARGUMENT]
+    # TYPE can have modifiers like +, !, ^, $ appended
+    read -r type path _rest <<< "$line" || continue
+
+    # Only care about paths under /etc/
+    [[ "$path" == /etc/* ]] || continue
+
+    # Only care about create-type rules
+    if ! [[ "$type" =~ ^($CREATE_TYPES)\$?$ ]]; then
+        continue
+    fi
+
+    # Extract the top-level entry: /etc/ssh/foo -> ssh
+    toplevel="${path#/etc/}"
+    toplevel="${toplevel%%/*}"
+
+    if [[ -n "${redirected[$toplevel]:-}" ]]; then
+        # This path is under a redirected entry: the image has
+        # /etc/$toplevel -> /var/etc/$toplevel, so the rule will work
+        # through the symlink. No rewrite needed.
+        continue
+    fi
+
+    # Check if the path already exists in the immutable image.
+    # - 'd'/'D' on existing dirs are harmless no-ops.
+    # - 'L$' ($ suffix = create only if absent) on existing symlinks/files
+    #   are no-ops since the image already provides them.
+    relpath="${path#/etc/}"
+    if [[ -e "$ETC_RO/$relpath" ]] || [[ -L "$ETC_RO/$relpath" ]]; then
+        continue
+    fi
+
+    # This path creates mutable content under /etc/$toplevel but
+    # finalize-etc does not redirect /etc/$toplevel -> /var/etc/$toplevel.
+    echo "ERROR: $confname: $type $path" >&2
+    echo "  Add 'C! /var/etc/$toplevel' to tmpfiles.d/01-var-etc.conf." >&2
+    exit 1
+done < <(systemd-tmpfiles --root="$BUILDROOT" --cat-config)
+
+echo "tmpfiles-etc: done"
